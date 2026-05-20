@@ -127,6 +127,14 @@ def priority_color(p: str) -> tuple[str, ...]:
     return {"H": ("red", "bold"), "M": ("yellow",), "L": ("dim",)}.get(p, ("dim",))
 
 
+def pad(text: str, width: int) -> str:
+    return text.ljust(width)
+
+
+PRIORITY_LABEL = {"H": "High", "M": "Medium", "L": "Low", "-": "-"}
+STATUS_LABEL = {"open": "undone", "done": "done"}
+
+
 # ── commands ──────────────────────────────────────────────────────────────────
 
 def cmd_add(args: argparse.Namespace) -> None:
@@ -167,17 +175,21 @@ def cmd_list(args: argparse.Namespace) -> None:
         r["id"],
     ))
 
-    print(f"  {c('ID', 'bold'):<14}  {c('S', 'bold')}  {c('P', 'bold')}  "
-          f"{c('DUE', 'bold'):<10}  {c('TASK', 'bold')}")
+    print(
+        f"  {c(pad('ID', 14), 'bold')}  "
+        f"{c(pad('STATUS', 6), 'bold')}  "
+        f"{c(pad('PRIORITY', 8), 'bold')}  "
+        f"{c(pad('DUE', 10), 'bold')}  "
+        f"{c('TASK', 'bold')}"
+    )
     for r in rows:
-        status = "✓" if r["status"] == "done" else " "
-        status_str = c(status, "green") if r["status"] == "done" else status
-        prio = c(r["priority"], *priority_color(r["priority"]))
-        due = r["due"] or "-"
-        text = r["text"]
-        if r["status"] == "done":
-            text = c(text, "dim")
-        print(f"  {r['id']:<14}  {status_str}  {prio}  {due:<10}  {text}")
+        status_label = STATUS_LABEL.get(r["status"], r["status"])
+        status_cell = c(pad(status_label, 6), "green") if r["status"] == "done" else pad(status_label, 6)
+        prio_label = PRIORITY_LABEL.get(r["priority"], r["priority"])
+        prio_cell = c(pad(prio_label, 8), *priority_color(r["priority"]))
+        due_cell = pad(r["due"] or "-", 10)
+        text = c(r["text"], "dim") if r["status"] == "done" else r["text"]
+        print(f"  {r['id']:<14}  {status_cell}  {prio_cell}  {due_cell}  {text}")
 
 
 def _set_status(args: argparse.Namespace, target: str) -> None:
@@ -209,15 +221,31 @@ def cmd_undone(args: argparse.Namespace) -> None:
 
 
 def cmd_edit(args: argparse.Namespace) -> None:
-    text = sanitize_text(args.text)
+    if args.text is None and args.due is None and args.priority is None:
+        die("nothing to edit; pass --text, --due, or --priority")
+
+    if args.due:
+        if not DATE_RE.match(args.due):
+            die(f"due date must be YYYY-MM-DD, got '{args.due}'")
+
     rows = read_tasks()
     tid = resolve_id(args.id, rows)
     for r in rows:
-        if r["id"] == tid:
-            r["text"] = text
-            log_event("edited", r)
-            print(f"edited {tid}  {text}")
-            break
+        if r["id"] != tid:
+            continue
+        changes = []
+        if args.text is not None:
+            r["text"] = sanitize_text(args.text)
+            changes.append(f"text={r['text']!r}")
+        if args.due is not None:
+            r["due"] = args.due
+            changes.append(f"due={r['due'] or '-'}")
+        if args.priority is not None:
+            r["priority"] = args.priority
+            changes.append(f"priority={r['priority']}")
+        log_event("edited", r)
+        print(f"edited {tid}  " + "  ".join(changes))
+        break
     write_tasks(rows)
 
 
@@ -415,9 +443,11 @@ def build_parser() -> argparse.ArgumentParser:
     u.add_argument("ids", nargs="+")
     u.set_defaults(func=cmd_undone)
 
-    e = sub.add_parser("edit", help="edit task text")
+    e = sub.add_parser("edit", help="edit task text, due, or priority")
     e.add_argument("id")
-    e.add_argument("text")
+    e.add_argument("-t", "--text")
+    e.add_argument("-d", "--due", help="due date YYYY-MM-DD, or empty string to clear")
+    e.add_argument("-p", "--priority", choices=["H", "M", "L", "-"])
     e.set_defaults(func=cmd_edit)
 
     r = sub.add_parser("rm", help="remove task(s)")

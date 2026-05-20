@@ -25,7 +25,9 @@ current state, `events.log` for history).
 ./todo.py list
 ./todo.py done <id>            # id, or any unambiguous prefix
 ./todo.py undone <id>
-./todo.py edit <id> "new text"
+./todo.py edit <id> -t "new text"           # any combo of -t/-d/-p
+./todo.py edit <id> -d 2026-07-15 -p H
+./todo.py edit <id> -d ""                   # clear due date
 ./todo.py rm <id>
 ./todo.py clear-done
 ./todo.py log -n 20
