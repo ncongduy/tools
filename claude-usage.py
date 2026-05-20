@@ -86,7 +86,7 @@ class Turn:
 
     @property
     def id(self) -> str:
-        h = hashlib.sha1(f"{self.session}|{self.ts.isoformat()}".encode())
+        h = hashlib.sha256(f"{self.session}|{self.ts.isoformat()}".encode())
         return h.hexdigest()[:8]
 
 
@@ -199,6 +199,10 @@ def collect_turns(
         sys.exit(1)
 
     if project_filter:
+        if "/" in project_filter or project_filter in (".", ".."):
+            print("error: --project must be a single directory name, not a path",
+                  file=sys.stderr)
+            sys.exit(1)
         paths: Iterable[Path] = (PROJECTS_DIR / project_filter).glob("*.jsonl")
     else:
         paths = PROJECTS_DIR.glob("*/*.jsonl")
@@ -236,9 +240,9 @@ def resolve_window(period: str, utc: bool,
 
 
 def _today_str(utc: bool) -> str:
-    now = datetime.now(tz=None) if not utc else datetime.utcnow()
+    from datetime import timezone
     if utc:
-        return now.strftime("%Y-%m-%d")
+        return datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return datetime.now().astimezone().strftime("%Y-%m-%d")
 
 

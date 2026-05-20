@@ -99,6 +99,9 @@ def sanitize_text(text: str) -> str:
     text = text.replace("\n", " ").replace("\r", " ").strip()
     if not text:
         die("task text is empty")
+    # Prefix DDE/formula injection chars so spreadsheet apps don't execute them
+    if text[0] in ("=", "+", "-", "@"):
+        text = "'" + text
     return text
 
 
@@ -282,6 +285,8 @@ def cmd_clear_done(args: argparse.Namespace) -> None:
 def cmd_log(args: argparse.Namespace) -> None:
     with EVENTS_LOG.open(newline="") as f:
         rows = list(csv.DictReader(f))
+    if args.n < 0:
+        die("-n must be non-negative")
     tail = rows[-args.n:] if args.n else rows
     for r in tail:
         print(f"{r['timestamp']}  {r['event']:<9}  {r['id']}  "
