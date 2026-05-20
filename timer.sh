@@ -115,4 +115,5 @@ else
   printf "\r  ✅  %s — done!%*s\n" "$label" 20 ""
   notify "⏰ $label" "Your timer has finished!"
   bell
+  cleanup
 fi
