@@ -23,8 +23,9 @@ current state, `events.log` for history).
 ./todo.py add "buy milk"
 ./todo.py add "finish report" -p H -d 2026-05-22
 ./todo.py list
+./todo.py start <id>           # mark in progress (open → active → done)
 ./todo.py done <id>            # id, or any unambiguous prefix
-./todo.py undone <id>
+./todo.py undone <id>          # revert to open from any state
 ./todo.py edit <id> -t "new text"           # any combo of -t/-d/-p
 ./todo.py edit <id> -d 2026-07-15 -p H
 ./todo.py edit <id> -d ""                   # clear due date

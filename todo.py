@@ -135,7 +135,7 @@ def pad(text: str, width: int) -> str:
 
 
 PRIORITY_LABEL = {"H": "High", "M": "Medium", "L": "Low", "-": "-"}
-STATUS_LABEL = {"open": "undone", "done": "done"}
+STATUS_LABEL = {"open": "open", "in_progress": "active", "done": "done"}
 
 
 # ── commands ──────────────────────────────────────────────────────────────────
@@ -167,7 +167,7 @@ def cmd_add(args: argparse.Namespace) -> None:
 def cmd_list(args: argparse.Namespace) -> None:
     rows = read_tasks()
     if not args.all:
-        rows = [r for r in rows if r["status"] == "open"]
+        rows = [r for r in rows if r["status"] in ("open", "in_progress")]
     if not rows:
         print(c("(no tasks)", "dim"))
         return
@@ -187,7 +187,12 @@ def cmd_list(args: argparse.Namespace) -> None:
     )
     for r in rows:
         status_label = STATUS_LABEL.get(r["status"], r["status"])
-        status_cell = c(pad(status_label, 6), "green") if r["status"] == "done" else pad(status_label, 6)
+        if r["status"] == "done":
+            status_cell = c(pad(status_label, 6), "green")
+        elif r["status"] == "in_progress":
+            status_cell = c(pad(status_label, 6), "cyan")
+        else:
+            status_cell = pad(status_label, 6)
         prio_label = PRIORITY_LABEL.get(r["priority"], r["priority"])
         prio_cell = c(pad(prio_label, 8), *priority_color(r["priority"]))
         due_cell = pad(r["due"] or "-", 10)
@@ -207,9 +212,13 @@ def _set_status(args: argparse.Namespace, target: str) -> None:
                 break
             r["status"] = target
             r["completed_at"] = now_iso() if target == "done" else ""
-            event = "completed" if target == "done" else "reopened"
+            if target == "done":
+                event, verb = "completed", "done"
+            elif target == "in_progress":
+                event, verb = "started", "started"
+            else:
+                event, verb = "reopened", "reopened"
             log_event(event, r)
-            verb = "done" if target == "done" else "reopened"
             print(f"{verb}: {tid}  {r['text']}")
             break
     write_tasks(rows)
@@ -221,6 +230,10 @@ def cmd_done(args: argparse.Namespace) -> None:
 
 def cmd_undone(args: argparse.Namespace) -> None:
     _set_status(args, "open")
+
+
+def cmd_start(args: argparse.Namespace) -> None:
+    _set_status(args, "in_progress")
 
 
 def cmd_edit(args: argparse.Namespace) -> None:
@@ -386,7 +399,7 @@ def cmd_report(args: argparse.Namespace) -> None:
         durations.append((done_dt - created_at[e["id"]]).total_seconds())
 
     rows = read_tasks()
-    still_open = sum(1 for r in rows if r["status"] == "open")
+    still_open = sum(1 for r in rows if r["status"] in ("open", "in_progress"))
 
     created_n = counts.get("created", 0)
     completed_n = counts.get("completed", 0)
@@ -447,6 +460,10 @@ def build_parser() -> argparse.ArgumentParser:
     u = sub.add_parser("undone", help="reopen task(s)")
     u.add_argument("ids", nargs="+")
     u.set_defaults(func=cmd_undone)
+
+    s = sub.add_parser("start", help="mark task(s) in progress")
+    s.add_argument("ids", nargs="+")
+    s.set_defaults(func=cmd_start)
 
     e = sub.add_parser("edit", help="edit task text, due, or priority")
     e.add_argument("id")
