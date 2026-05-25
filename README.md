@@ -101,3 +101,9 @@ and reports streaks, heatmaps, and completion rates.
 Habits are identified by name (or any unambiguous prefix). Data lives in
 `~/.habit/`: `habits.csv` for current definitions and `events.log` for the
 append-only event history — both plain CSV, readable in any spreadsheet.
+
+## workflow
+
+- check todo high priority => timer => action
+- check habit => timer => action
+- check todo medium, low priority => timer => action
