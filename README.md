@@ -68,3 +68,36 @@ back.
 Costs use a hardcoded per-million-tokens price table for the Opus,
 Sonnet, and Haiku 4.x families; unknown models contribute tokens but
 show `n/a` for cost.
+
+## `habit.py`
+
+Terminal daily habit tracker with an append-only event log. Tracks
+boolean (done/not-done) and quantitative habits with optional targets,
+and reports streaks, heatmaps, and completion rates.
+
+```
+./habit.py add meditate
+./habit.py add pushups --type num --target 20 --unit reps
+./habit.py list                             # active habits
+./habit.py list --all                       # include archived
+./habit.py checkin meditate
+./habit.py checkin pushups 25 --note "morning set"
+./habit.py uncheckin meditate               # undo today's check-in
+./habit.py today                            # [ ]/[x] progress view
+./habit.py status                           # streak table across all habits
+./habit.py status meditate                  # per-habit detail
+./habit.py report week                      # week | month | year | all
+./habit.py report --from 2026-05-01 --to 2026-05-25
+./habit.py heatmap --weeks 12               # ASCII calendar, all habits
+./habit.py heatmap pushups --weeks 4
+./habit.py edit pushups --target 25         # update definition in place
+./habit.py edit meditate --rename meditation
+./habit.py archive meditation               # hide without deleting history
+./habit.py unarchive meditation
+./habit.py rm meditation --yes              # hard-delete definition + events
+./habit.py log -n 20
+```
+
+Habits are identified by name (or any unambiguous prefix). Data lives in
+`~/.habit/`: `habits.csv` for current definitions and `events.log` for the
+append-only event history — both plain CSV, readable in any spreadsheet.
