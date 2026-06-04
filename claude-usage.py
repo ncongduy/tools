@@ -18,6 +18,7 @@ PROJECTS_DIR = Path.home() / ".claude" / "projects"
 
 # USD per million tokens. Matched by substring against message.model.
 PRICES: list[tuple[str, dict]] = [
+    ("opus-4-8",   {"in": 15.0, "out": 75.0, "cw": 18.75, "cr": 1.50}),
     ("opus-4-7",   {"in": 15.0, "out": 75.0, "cw": 18.75, "cr": 1.50}),
     ("opus-4-6",   {"in": 15.0, "out": 75.0, "cw": 18.75, "cr": 1.50}),
     ("sonnet-4-6", {"in":  3.0, "out": 15.0, "cw":  3.75, "cr": 0.30}),
