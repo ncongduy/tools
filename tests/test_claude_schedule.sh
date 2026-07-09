@@ -66,7 +66,8 @@ check "now rolls to tomorrow" \
 echo "human_delta"
 check "8040s" "$(human_delta 8040)" "2h 14m"
 check "600s"  "$(human_delta 600)"  "10m"
-check "0s"    "$(human_delta 0)"    "0m"
+check "45s"   "$(human_delta 45)"   "45s"
+check "0s"    "$(human_delta 0)"    "0s"
 check "3600s" "$(human_delta 3600)" "1h 0m"
 
 echo "logging"
@@ -169,6 +170,13 @@ run_job "boom" opus acceptEdits "" md "$PAST" "$LOG5" "$WORKDIR"
 check "failed md log has stderr" "$(grep -c 'fake failure' "$LOG5")" 1
 
 unset FAKE_CLAUDE_FAIL
+
+echo "ask"
+check "ask returns typed value"           "$(echo 'sonnet' | ask 'Model' opus 2>/dev/null)" sonnet
+check "ask returns default on empty"      "$(echo '' | ask 'Model' opus 2>/dev/null)"       opus
+check "ask with no default returns empty" "$(echo '' | ask 'Prompt' 2>/dev/null)"           ""
+check "ask prompt goes to stderr" \
+  "$(echo 'x' | ask 'Model' opus 2>&1 >/dev/null | grep -c 'Model')" 1
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

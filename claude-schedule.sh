@@ -59,7 +59,10 @@ human_delta() {
   local s="$1" h m
   h=$(( s / 3600 ))
   m=$(( (s % 3600) / 60 ))
-  if (( h > 0 )); then printf '%dh %dm' "$h" "$m"; else printf '%dm' "$m"; fi
+  if   (( h > 0 )); then printf '%dh %dm' "$h" "$m"
+  elif (( m > 0 )); then printf '%dm' "$m"
+  else                   printf '%ds' "$s"
+  fi
 }
 
 # ── logging ────────────────────────────────────────────────────────────────────
@@ -190,7 +193,96 @@ run_job() {
   return "$rc"
 }
 
+# ── input ──────────────────────────────────────────────────────────────────────
+
+# Prompt on stderr so `answer=$(ask ...)` captures only the answer.
+ask() {
+  local label="$1" default="${2:-}" reply
+  if [[ -n "$default" ]]; then
+    printf '  %-24s [%s]: ' "$label" "$default" >&2
+  else
+    printf '  %-24s: ' "$label" >&2
+  fi
+  read -r reply || true
+  printf '%s\n' "${reply:-$default}"
+}
+
 # Sourced by tests: define functions, run nothing.
 if [[ -n "${CLAUDE_SCHEDULE_LIB:-}" ]]; then
   return 0 2>/dev/null || exit 0
 fi
+
+# ── worker entrypoint ──────────────────────────────────────────────────────────
+# Re-exec'd by the scheduler under nohup. Not a public interface.
+
+if [[ "${1:-}" == "--worker" ]]; then
+  shift
+  run_job "$@"
+  exit $?
+fi
+
+# ── main ───────────────────────────────────────────────────────────────────────
+
+if ! command -v claude >/dev/null 2>&1; then
+  echo "❌  claude is not on PATH." >&2
+  exit 1
+fi
+
+SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+
+echo "╔══════════════════════════════════════╗"
+echo "║      ⏰  Schedule a Claude run        ║"
+echo "╚══════════════════════════════════════╝"
+echo
+
+while true; do
+  TIME_INPUT="$(ask 'Time (HH:MM)')"
+  validate_hhmm "$TIME_INPUT" && break
+  echo "     ⚠️  Expected HH:MM in 24-hour form, e.g. 14:30." >&2
+done
+
+while true; do
+  PROMPT="$(ask 'Prompt')"
+  [[ -n "$PROMPT" ]] && break
+  echo "     ⚠️  Prompt cannot be empty." >&2
+done
+
+MODEL="$(ask 'Model' "$DEFAULT_MODEL")"
+
+while true; do
+  MODE="$(ask 'Permission mode' "$DEFAULT_MODE")"
+  validate_mode "$MODE" && break
+  echo "     ⚠️  One of: $VALID_MODES" >&2
+done
+
+SESSION="$(ask 'Session id (blank = new)')"
+
+while true; do
+  FMT="$(ask 'Log format (md/json)' "$DEFAULT_FMT" | tr '[:upper:]' '[:lower:]')"
+  [[ "$FMT" == "md" || "$FMT" == "json" ]] && break
+  echo "     ⚠️  Expected 'md' or 'json'." >&2
+done
+
+NOW="$(date +%s)"
+TARGET="$(resolve_target "$TIME_INPUT" "$NOW")"
+mkdir -p "$LOG_DIR" && chmod 700 "$LOG_DIR"
+LOGFILE="$(log_path "$TARGET" "$FMT")"
+
+if [[ "$MODE" == "bypassPermissions" ]]; then
+  echo
+  echo "  ⚠️  bypassPermissions runs unattended with no confirmation prompts."
+fi
+
+nohup "$SCRIPT_PATH" --worker \
+  "$PROMPT" "$MODEL" "$MODE" "$SESSION" "$FMT" "$TARGET" "$LOGFILE" "$PWD" \
+  >/dev/null 2>&1 &
+JOB_PID=$!
+disown "$JOB_PID" 2>/dev/null || true
+
+echo
+echo "  ✅  Scheduled for $(fmt_when "$TARGET") (in $(human_delta $(( TARGET - NOW ))))"
+echo "      job pid : $JOB_PID"
+echo "      workdir : $PWD"
+echo "      log     : $LOGFILE"
+echo
+echo "      cancel with: kill $JOB_PID"
