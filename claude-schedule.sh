@@ -132,6 +132,64 @@ sys.stdout.write("\n")
 PY
 }
 
+# ── worker ─────────────────────────────────────────────────────────────────────
+
+# Poll the wall clock rather than one long sleep: nanosleep does not advance
+# across a macOS suspend, so `sleep 28800` fires hours late after an overnight
+# lid-close. 30s slices bound the drift.
+wait_until() {
+  local target="$1" remain
+  while (( $(date +%s) < target )); do
+    remain=$(( target - $(date +%s) ))
+    if (( remain > 30 )); then sleep 30; else sleep "$remain"; fi
+  done
+}
+
+notify() {
+  local title="$1" body="$2"
+  if command -v osascript >/dev/null 2>&1; then
+    osascript -e "display notification \"${body//\"/}\" with title \"${title//\"/}\"" \
+      >/dev/null 2>&1 || true
+  elif command -v notify-send >/dev/null 2>&1; then
+    notify-send "$title" "$body" >/dev/null 2>&1 || true
+  fi
+}
+
+# run_job <prompt> <model> <mode> <session> <fmt> <target> <logfile> <workdir>
+run_job() {
+  local prompt="$1" model="$2" mode="$3" session="$4" fmt="$5" \
+        target="$6" logfile="$7" workdir="$8"
+  local raw err rc=0 prev_pwd="$PWD"
+
+  wait_until "$target"
+  cd "$workdir" || return 1
+
+  raw="$(mktemp)"; err="$(mktemp)"
+  # Restore cwd as well as clean up: the tests call run_job in-process, so a
+  # stray `cd` would leak into the caller's shell.
+  trap 'rm -f "$raw" "$err"; cd "$prev_pwd" || true' RETURN
+
+  local args=( -p "$prompt" --model "$model" --permission-mode "$mode"
+               --output-format json )
+  [[ -n "$session" ]] && args+=( --resume "$session" )
+
+  claude "${args[@]}" </dev/null >"$raw" 2>"$err" || rc=$?
+
+  mkdir -p "$(dirname "$logfile")"
+  if [[ "$fmt" == "json" ]]; then
+    if (( rc == 0 )) && [[ -s "$raw" ]]; then
+      cat "$raw" >"$logfile"
+    else
+      render_error_json "$rc" "$err" >"$logfile"
+    fi
+  else
+    render_md "$prompt" "$model" "$mode" "$session" "$target" "$rc" "$raw" "$err" >"$logfile"
+  fi
+
+  notify "claude-schedule" "Run finished (exit $rc) → $(basename "$logfile")"
+  return "$rc"
+}
+
 # Sourced by tests: define functions, run nothing.
 if [[ -n "${CLAUDE_SCHEDULE_LIB:-}" ]]; then
   return 0 2>/dev/null || exit 0

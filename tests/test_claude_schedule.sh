@@ -114,5 +114,61 @@ check "error json is valid" \
   "$(printf '%s' "$EJ" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["exit_code"], d["is_error"])')" \
   "127 True"
 
+echo "worker"
+notify() { :; }   # override: don't fire real desktop notifications during tests
+
+FAKE_BIN="$(mktemp -d)"
+cat >"$FAKE_BIN/claude" <<'SH'
+#!/usr/bin/env bash
+# Fake claude: echoes its own argv into the json result so we can assert on it.
+if [[ "${FAKE_CLAUDE_FAIL:-0}" == "1" ]]; then
+  echo "fake failure" >&2
+  exit 3
+fi
+printf '{"type":"result","is_error":false,"duration_ms":1000,"num_turns":1,'
+printf '"result":"ARGV=%s","session_id":"sess-9","total_cost_usd":0.01}\n' "$*"
+SH
+chmod +x "$FAKE_BIN/claude"
+PATH="$FAKE_BIN:$PATH"
+
+WORKDIR="$(mktemp -d)"
+PAST=$(( $(date +%s) - 5 ))   # already elapsed → wait_until returns instantly
+
+LOG="$LOG_DIR/worker-md.md"
+run_job "do a thing" opus acceptEdits "" md "$PAST" "$LOG" "$WORKDIR"
+check "md log written"    "$( [[ -s "$LOG" ]] && echo yes || echo no )" yes
+check "md log has output" "$(grep -c 'ARGV=' "$LOG")"                    1
+check "passes -p"         "$(grep -c -- '-p do a thing' "$LOG")"         1
+check "passes --model"    "$(grep -c -- '--model opus' "$LOG")"          1
+check "passes --permission-mode"    "$(grep -c -- '--permission-mode acceptEdits' "$LOG")" 1
+check "passes --output-format json" "$(grep -c -- '--output-format json' "$LOG")"          1
+check "no --resume when session empty" "$(grep -c -- '--resume' "$LOG")" 0
+check "run_job restores cwd" "$PWD" "$ROOT"
+
+LOG2="$LOG_DIR/worker-resume.md"
+run_job "again" sonnet plan "sess-abc" md "$PAST" "$LOG2" "$WORKDIR"
+check "passes --resume when session given" "$(grep -c -- '--resume sess-abc' "$LOG2")" 1
+
+LOG3="$LOG_DIR/worker.json"
+run_job "raw" opus acceptEdits "" json "$PAST" "$LOG3" "$WORKDIR"
+check "json log is the raw result" \
+  "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["session_id"])' "$LOG3")" \
+  sess-9
+
+export FAKE_CLAUDE_FAIL=1
+
+LOG4="$LOG_DIR/worker-fail.json"
+run_job "boom" opus acceptEdits "" json "$PAST" "$LOG4" "$WORKDIR"
+RC=$?
+check "run_job propagates exit code" "$RC" 3
+check "failed json log records exit_code" \
+  "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["exit_code"])' "$LOG4")" 3
+
+LOG5="$LOG_DIR/worker-fail.md"
+run_job "boom" opus acceptEdits "" md "$PAST" "$LOG5" "$WORKDIR"
+check "failed md log has stderr" "$(grep -c 'fake failure' "$LOG5")" 1
+
+unset FAKE_CLAUDE_FAIL
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
