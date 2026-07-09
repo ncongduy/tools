@@ -44,5 +44,30 @@ check "rejects yolo"              "$(status validate_mode yolo)"              er
 check "rejects empty"             "$(status validate_mode '')"                err
 check "rejects planX"             "$(status validate_mode planX)"             err
 
+echo "time math"
+NOW=$(to_epoch 2026-07-09 10:00)
+check "to_epoch is a 10-digit epoch" "$(printf '%s' "$NOW" | wc -c | tr -d ' ')" 10
+check "fmt_day round-trips"          "$(fmt_day "$NOW")"     2026-07-09
+check "fmt_stamp round-trips"        "$(fmt_stamp "$NOW")"   2026-07-09-1000
+check "fmt_when round-trips"         "$(fmt_when "$NOW")"    "2026-07-09 10:00"
+
+# 14:30 is still ahead of 10:00 → same day.
+check "future time stays today" \
+  "$(fmt_when "$(resolve_target 14:30 "$NOW")")" "2026-07-09 14:30"
+
+# 09:00 already passed → tomorrow.
+check "past time rolls to tomorrow" \
+  "$(fmt_when "$(resolve_target 09:00 "$NOW")")" "2026-07-10 09:00"
+
+# Exactly now counts as passed.
+check "now rolls to tomorrow" \
+  "$(fmt_when "$(resolve_target 10:00 "$NOW")")" "2026-07-10 10:00"
+
+echo "human_delta"
+check "8040s" "$(human_delta 8040)" "2h 14m"
+check "600s"  "$(human_delta 600)"  "10m"
+check "0s"    "$(human_delta 0)"    "0m"
+check "3600s" "$(human_delta 3600)" "1h 0m"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
