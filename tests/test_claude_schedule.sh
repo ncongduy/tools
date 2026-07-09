@@ -69,5 +69,50 @@ check "600s"  "$(human_delta 600)"  "10m"
 check "0s"    "$(human_delta 0)"    "0m"
 check "3600s" "$(human_delta 3600)" "1h 0m"
 
+echo "logging"
+LOG_DIR="$(mktemp -d)"   # override the real ~/.claude/schedule
+TARGET=$(to_epoch 2026-07-09 14:30)
+
+check "rand_id is 4 hex chars" "$(rand_id | grep -cE '^[0-9a-f]{4}$')" 1
+
+P="$(log_path "$TARGET" md)"
+JP="$(log_path "$TARGET" json)"
+check "log_path dir"      "$(dirname "$P")"                                   "$LOG_DIR"
+check "log_path shape"    "$(basename "$P" | sed -E 's/-[0-9a-f]{4}\.md$/-ID.md/')" "2026-07-09-1430-ID.md"
+check "log_path json ext" "${JP##*.}"                                         json
+
+# A canned successful claude result.
+RAW="$(mktemp)"; ERRF="$(mktemp)"
+cat >"$RAW" <<'JSON'
+{"type":"result","subtype":"success","is_error":false,"duration_ms":4210,
+ "num_turns":3,"result":"Reviewed auth module. Found 2 issues.",
+ "session_id":"abc-123","total_cost_usd":0.0231}
+JSON
+: >"$ERRF"
+
+MD="$(render_md "review the auth module" opus acceptEdits "" "$TARGET" 0 "$RAW" "$ERRF")"
+check "md has when"     "$(printf '%s' "$MD" | grep -c '^- when    : 2026-07-09 14:30$')" 1
+check "md has model"    "$(printf '%s' "$MD" | grep -c '^- model   : opus$')"             1
+check "md has session"  "$(printf '%s' "$MD" | grep -c '^- session : abc-123$')"          1
+check "md has cost"     "$(printf '%s' "$MD" | grep -c '^- cost    : \$0.0231$')"         1
+check "md has duration" "$(printf '%s' "$MD" | grep -c '^- duration: 4.2s$')"             1
+check "md has prompt"   "$(printf '%s' "$MD" | grep -c '^review the auth module$')"       1
+check "md has output"   "$(printf '%s' "$MD" | grep -c 'Found 2 issues')"                 1
+check "md no stderr section when clean" "$(printf '%s' "$MD" | grep -c '^## Stderr$')"    0
+
+# Garbage stdout + stderr: must still render, falling back to raw text.
+printf 'not json at all' >"$RAW"
+printf 'boom\n' >"$ERRF"
+MD2="$(render_md "p" opus plan "" "$TARGET" 1 "$RAW" "$ERRF")"
+check "md survives bad json"  "$(printf '%s' "$MD2" | grep -c 'not json at all')"    1
+check "md shows exit code"    "$(printf '%s' "$MD2" | grep -c '^- exit    : 1$')"    1
+check "md shows stderr"       "$(printf '%s' "$MD2" | grep -c '^## Stderr$')"        1
+check "md session falls back" "$(printf '%s' "$MD2" | grep -c '^- session : (new)$')" 1
+
+EJ="$(render_error_json 127 "$ERRF")"
+check "error json is valid" \
+  "$(printf '%s' "$EJ" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["exit_code"], d["is_error"])')" \
+  "127 True"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

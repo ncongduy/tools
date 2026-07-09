@@ -62,6 +62,76 @@ human_delta() {
   if (( h > 0 )); then printf '%dh %dm' "$h" "$m"; else printf '%dm' "$m"; fi
 }
 
+# ── logging ────────────────────────────────────────────────────────────────────
+
+# $RANDOM, not `tr </dev/urandom | head -c 4`: that pipeline takes SIGPIPE and
+# trips `set -o pipefail` with exit 141.
+rand_id() { printf '%04x' $(( RANDOM % 65536 )); }
+
+log_path() {
+  local target="$1" fmt="$2"
+  printf '%s/%s-%s.%s' "$LOG_DIR" "$(fmt_stamp "$target")" "$(rand_id)" "$fmt"
+}
+
+# render_md <prompt> <model> <mode> <session> <target> <rc> <raw_json> <stderr>
+render_md() {
+  python3 - "$@" <<'PY'
+import json, pathlib, sys
+from datetime import datetime
+
+prompt, model, mode, session, target, rc, rawf, errf = sys.argv[1:9]
+raw = pathlib.Path(rawf).read_text(errors="replace").strip()
+err = pathlib.Path(errf).read_text(errors="replace").strip()
+
+try:
+    data = json.loads(raw) if raw else {}
+    if not isinstance(data, dict):
+        data = {}
+except json.JSONDecodeError:
+    data = {}
+
+when = datetime.fromtimestamp(int(target)).strftime("%Y-%m-%d %H:%M")
+body = data.get("result") or raw or "(no output)"
+
+lines = [
+    "# claude-schedule run",
+    "",
+    f"- when    : {when}",
+    f"- model   : {model}",
+    f"- mode    : {mode}",
+    f"- session : {data.get('session_id') or session or '(new)'}",
+    f"- exit    : {rc}",
+]
+if data.get("total_cost_usd") is not None:
+    lines.append(f"- cost    : ${float(data['total_cost_usd']):.4f}")
+if data.get("duration_ms") is not None:
+    lines.append(f"- duration: {int(data['duration_ms']) / 1000:.1f}s")
+if data.get("num_turns") is not None:
+    lines.append(f"- turns   : {data['num_turns']}")
+
+lines += ["", "## Prompt", "", prompt, "", "## Output", "", body]
+if err:
+    lines += ["", "## Stderr", "", "```", err, "```"]
+
+sys.stdout.write("\n".join(lines) + "\n")
+PY
+}
+
+# render_error_json <rc> <stderr_file>
+render_error_json() {
+  python3 - "$@" <<'PY'
+import json, pathlib, sys
+rc = int(sys.argv[1])
+err = pathlib.Path(sys.argv[2]).read_text(errors="replace").strip()
+json.dump(
+    {"type": "result", "is_error": True, "exit_code": rc, "error": err},
+    sys.stdout,
+    indent=2,
+)
+sys.stdout.write("\n")
+PY
+}
+
 # Sourced by tests: define functions, run nothing.
 if [[ -n "${CLAUDE_SCHEDULE_LIB:-}" ]]; then
   return 0 2>/dev/null || exit 0
