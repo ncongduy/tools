@@ -171,6 +171,38 @@ check "failed md log has stderr" "$(grep -c 'fake failure' "$LOG5")" 1
 
 unset FAKE_CLAUDE_FAIL
 
+# claude can exit non-zero *and* still print a valid JSON diagnostic on stdout
+# (e.g. an unknown --model). That diagnostic is the most useful thing we have,
+# so the json log must keep it rather than synthesise an empty error object.
+cat >"$FAKE_BIN/claude" <<'SH'
+#!/usr/bin/env bash
+echo '{"type":"result","is_error":true,"result":"unknown model","session_id":"sess-diag"}'
+exit 1
+SH
+chmod +x "$FAKE_BIN/claude"
+
+LOG6="$LOG_DIR/worker-diag.json"
+run_job "boom" nope acceptEdits "" json "$PAST" "$LOG6" "$WORKDIR"
+check "nonzero exit still propagates" "$?" 1
+check "json log keeps claude's own diagnostic" \
+  "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["result"])' "$LOG6")" \
+  "unknown model"
+
+# Unparseable stdout → fall back to the synthetic error object.
+cat >"$FAKE_BIN/claude" <<'SH'
+#!/usr/bin/env bash
+echo 'segfault lol'
+echo 'crashed' >&2
+exit 9
+SH
+chmod +x "$FAKE_BIN/claude"
+
+LOG7="$LOG_DIR/worker-garbage.json"
+run_job "boom" opus acceptEdits "" json "$PAST" "$LOG7" "$WORKDIR"
+check "garbage stdout falls back to synthetic error json" \
+  "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["exit_code"], d["error"])' "$LOG7")" \
+  "9 crashed"
+
 echo "ask"
 check "ask returns typed value"           "$(echo 'sonnet' | ask 'Model' opus 2>/dev/null)" sonnet
 check "ask returns default on empty"      "$(echo '' | ask 'Model' opus 2>/dev/null)"       opus

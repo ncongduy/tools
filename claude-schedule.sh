@@ -120,6 +120,8 @@ sys.stdout.write("\n".join(lines) + "\n")
 PY
 }
 
+is_json() { python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$1" 2>/dev/null; }
+
 # render_error_json <rc> <stderr_file>
 render_error_json() {
   python3 - "$@" <<'PY'
@@ -180,7 +182,10 @@ run_job() {
 
   mkdir -p "$(dirname "$logfile")"
   if [[ "$fmt" == "json" ]]; then
-    if (( rc == 0 )) && [[ -s "$raw" ]]; then
+    # A non-zero exit does not mean there is nothing worth keeping: claude
+    # reports an unknown model, say, as valid JSON on stdout and exits 1.
+    # Only synthesise an error object when stdout is missing or unparseable.
+    if [[ -s "$raw" ]] && is_json "$raw"; then
       cat "$raw" >"$logfile"
     else
       render_error_json "$rc" "$err" >"$logfile"
