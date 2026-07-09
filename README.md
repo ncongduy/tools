@@ -13,6 +13,41 @@ Countdown or stopwatch timer.
 ./timer.sh           # stopwatch
 ```
 
+## `claude-schedule.sh`
+
+Run a Claude Code prompt at a chosen time, unattended, and log the result.
+Asks for the time, prompt, model, permission mode, session id, and log
+format; then detaches with `nohup` and returns your shell.
+
+```
+./claude-schedule.sh
+
+  Time (HH:MM)            : 14:30
+  Prompt                  : review the auth module for timing leaks
+  Model                    [opus]:
+  Permission mode          [acceptEdits]:
+  Session id (blank = new):
+  Log format (md/json)     [md]:
+
+  ✅  Scheduled for 2026-07-09 14:30 (in 2h 14m)
+      job pid : 48213
+      log     : /Users/ncd/.claude/schedule/2026-07-09-1430-a3f1.md
+```
+
+The job runs `claude -p` in the directory you scheduled it from. Logs land in
+`~/.claude/schedule/`. `md` renders a report with cost, duration, and the
+resulting session id; `json` keeps the raw `--output-format json` result.
+Give a session id to `--resume` an existing conversation, or leave it blank
+for a new one.
+
+Permission mode is one of `acceptEdits`, `auto`, `bypassPermissions`,
+`manual`, `dontAsk`, `plan`. The job survives closing the terminal but **not
+a reboot** — it is a background process, not a cron entry. Cancel it with
+`kill <pid>`.
+
+Tests: `bash tests/test_claude_schedule.sh` (uses a fake `claude`, spends
+nothing).
+
 ## `todo.py`
 
 Terminal to-do list with an append-only event log for weekly / monthly /
