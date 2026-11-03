@@ -11,7 +11,9 @@ import io
 import os
 import subprocess
 import sys
+import gzip
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -33,6 +35,15 @@ def redact(text: str, rules=None):
 
 def r(text: str) -> str:
     return redact(text)[0]
+
+
+SAMPLE = (
+    "2026-11-03T14:30:22+02:00 GET /cb?access_token=xyz789 from 203.0.113.7 (2001:db8::1)\n"
+    'headers {"Authorization": "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2ln"}\n'
+    "user=jane@example.com phone=+358 40 123 4567 mac=00:1a:2b:3c:4d:5e card 4111 1111 1111 1111\n"
+    "db postgres://admin:pw@10.0.0.5/app DB_PASSWORD=\"x y\" AWS=AKIAIOSFODNN7EXAMPLE HOME=/home/jane\n"
+    "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBg\n-----END PRIVATE KEY-----\n"
+)
 
 
 # ── secrets ───────────────────────────────────────────────────────────────────
@@ -276,6 +287,193 @@ class StreamAndSelection(unittest.TestCase):
         self.assertEqual(rl.default_output(Path("syslog")), Path("syslog.redacted"))
 
 
+# ── review fixes: values that used to leak ────────────────────────────────────
+
+class CardWindows(unittest.TestCase):
+
+    def test_card_next_to_other_digits(self):
+        cases = {
+            "card 4111 1111 1111 1111 12/25": "card [REDACTED:CREDIT_CARD] 12/25",
+            "card 4111111111111111 123": "card [REDACTED:CREDIT_CARD] 123",
+            "14:30:22 4111111111111111": "14:30:22 [REDACTED:CREDIT_CARD]",
+            "2026-11-03 4111111111111111": "2026-11-03 [REDACTED:CREDIT_CARD]",
+        }
+        for src, want in cases.items():
+            with self.subTest(src=src):
+                self.assertEqual(r(src), want)
+
+    def test_two_cards_in_one_digit_run(self):
+        out, counts = redact("4111111111111111 5555555555554444")
+        self.assertEqual(out, "[REDACTED:CREDIT_CARD] [REDACTED:CREDIT_CARD]")
+        self.assertEqual(counts["credit_card"], 2)
+
+    def test_more_card_networks(self):
+        for card in ["6250941006528599",    # UnionPay
+                     "6759649826438453",    # Maestro
+                     "2200000000000004"]:   # Mir
+            with self.subTest(card=card):
+                self.assertEqual(r(f"card {card} ok"), "card [REDACTED:CREDIT_CARD] ok")
+
+
+class SecretForms(unittest.TestCase):
+
+    def test_escaped_json_in_json(self):
+        src = r'{"body":"{\"password\":\"hunter2\",\"token\":\"abc\"}"}'
+        want = r'{"body":"{\"password\":\"[REDACTED:SECRET]\",\"token\":\"[REDACTED:SECRET]\"}"}'
+        self.assertEqual(r(src), want)
+
+    def test_more_secret_key_names(self):
+        cases = {
+            "SECRET_KEY=django-insecure-abc123": "SECRET_KEY=[REDACTED:SECRET]",
+            "ENCRYPTION_KEY=abcd1234": "ENCRYPTION_KEY=[REDACTED:SECRET]",
+            "secretKey: abc": "secretKey: [REDACTED:SECRET]",
+            "signing_key=abc": "signing_key=[REDACTED:SECRET]",
+            "DB_PASS=hunter2": "DB_PASS=[REDACTED:SECRET]",
+            '"pass": "hunter2"': '"pass": "[REDACTED:SECRET]"',
+            "passphrase=correct": "passphrase=[REDACTED:SECRET]",
+            "session_id=abc123": "session_id=[REDACTED:SECRET]",
+        }
+        for src, want in cases.items():
+            with self.subTest(src=src):
+                self.assertEqual(r(src), want)
+
+    def test_cookie_header_redacted_to_end_of_line(self):
+        self.assertEqual(r("Cookie: session=abc123def456; theme=dark\n"),
+                         "Cookie: [REDACTED:SECRET]\n")
+        self.assertEqual(r("Set-Cookie: sid=abc; Path=/; HttpOnly"),
+                         "Set-Cookie: [REDACTED:SECRET]")
+        self.assertEqual(r('{"Cookie": "a=1; b=2", "Host": "x"}'),
+                         '{"Cookie": "[REDACTED:SECRET]", "Host": "x"}')
+
+    def test_ordinary_keys_untouched(self):
+        line = "bypass=true compass=north cache_key=user:42 primary_key=id cookies_enabled=1"
+        self.assertEqual(r(line), line)
+
+    def test_arrow_and_walrus_separators(self):
+        self.assertEqual(r("'password' => 'hunter2'"), "'password' => '[REDACTED:SECRET]'")
+        self.assertEqual(r('password := "hunter2"'), 'password := "[REDACTED:SECRET]"')
+
+    def test_array_and_object_values(self):
+        cases = {
+            '"credentials": ["sekrit1","sekrit2"]': '"credentials": [REDACTED:SECRET]',
+            '{"auth": {"user": "bob", "pass": "hunter2"}}': '{"auth": [REDACTED:SECRET]}',
+            '{"auth": {"a": {"b": "c"}, "d": "e"}}': '{"auth": [REDACTED:SECRET]}',
+            '"token": ["abc", "def': '"token": [REDACTED:SECRET]',
+        }
+        for src, want in cases.items():
+            with self.subTest(src=src):
+                self.assertEqual(r(src), want)
+
+    def test_cli_flag_with_space(self):
+        self.assertEqual(r("mysql -u root --password hunter2"),
+                         "mysql -u root --password [REDACTED:SECRET]")
+        self.assertEqual(r("set PASSWORD hunter2"), "set PASSWORD [REDACTED:SECRET]")
+
+    def test_cli_lookalikes_untouched(self):
+        for line in ["please set password for bob",
+                     "docker login --password-stdin",
+                     "--password-file /run/pw"]:
+            with self.subTest(line=line):
+                self.assertEqual(r(line), line)
+
+    def test_placeholder_inside_value_is_not_split(self):
+        self.assertEqual(r("db_auth=postgres://u:p@h.example:5/x"), "db_auth=[REDACTED:SECRET]")
+
+    def test_redacting_twice_changes_nothing(self):
+        once = r(SAMPLE)
+        self.assertEqual(r(once), once)
+
+
+class UrlCredentials(unittest.TestCase):
+
+    def test_hard_passwords(self):
+        cases = {
+            "redis://:s3cret@localhost:6379/0": "redis://[REDACTED:CREDENTIALS]@localhost:6379/0",
+            "postgres://admin:pa/ss@db:5432/app": "postgres://[REDACTED:CREDENTIALS]@db:5432/app",
+            "postgres://admin:p@ss@db": "postgres://[REDACTED:CREDENTIALS]@db",
+        }
+        for src, want in cases.items():
+            with self.subTest(src=src):
+                self.assertEqual(r(src), want)
+
+    def test_port_and_path_are_not_a_password(self):
+        line = "GET https://example.com:8080/@bob ok"
+        self.assertEqual(r(line), line)
+
+
+class PrivateKeyBlocks(unittest.TestCase):
+
+    def test_second_begin_on_same_line(self):
+        text = ("a -----BEGIN PRIVATE KEY-----x-----END PRIVATE KEY----- "
+                "-----BEGIN RSA PRIVATE KEY-----\n"
+                "MIIEsecretbody\n"
+                "-----END RSA PRIVATE KEY-----\n"
+                "after\n")
+        out, counts = redact(text)
+        self.assertEqual(out, "a [REDACTED:PRIVATE_KEY] [REDACTED:PRIVATE_KEY]\nafter\n")
+        self.assertEqual(counts["private_key"], 2)
+
+    def test_back_to_back_keys(self):
+        text = ("-----BEGIN RSA PRIVATE KEY-----\n"
+                "MIIEbody1\n"
+                "-----END RSA PRIVATE KEY----------BEGIN RSA PRIVATE KEY-----\n"
+                "MIIEbody2secret\n"
+                "-----END RSA PRIVATE KEY-----\n")
+        self.assertEqual(r(text), "[REDACTED:PRIVATE_KEY][REDACTED:PRIVATE_KEY]\n")
+
+    def test_header_mentioned_in_prose_keeps_rest_of_file(self):
+        text = "error: expected -----BEGIN PRIVATE KEY----- header\nline2 10.0.0.1\nline3 important\n"
+        self.assertEqual(r(text), "error: expected -----BEGIN PRIVATE KEY----- header\n"
+                                  "line2 [REDACTED:IPV4]\nline3 important\n")
+
+    def test_cut_off_key_ends_at_first_log_line(self):
+        text = ("key: -----BEGIN PRIVATE KEY-----\n"
+                "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n"
+                "2026-11-03 INFO next 10.0.0.1\n")
+        self.assertEqual(r(text), "key: [REDACTED:PRIVATE_KEY]\n2026-11-03 INFO next [REDACTED:IPV4]\n")
+
+    def test_cut_off_escaped_key_on_one_line(self):
+        self.assertEqual(r('"k": "-----BEGIN PRIVATE KEY-----\\nMIIEvQIBADANBgkq'),
+                         '"k": "[REDACTED:PRIVATE_KEY]')
+
+
+class AddressAfterKey(unittest.TestCase):
+
+    def test_ipv6_and_mac_right_after_colon_key(self):
+        self.assertEqual(r("addr:fe80::1 ip:2001:db8::1 hw:aa:bb:cc:dd:ee:ff"),
+                         "addr:[REDACTED:IPV6] ip:[REDACTED:IPV6] hw:[REDACTED:MAC]")
+        self.assertEqual(r("mac:aa:bb:cc:dd:ee:ff"), "mac:[REDACTED:MAC]")
+
+
+class MorePaths(unittest.TestCase):
+
+    def test_lowercase_windows_and_var_home(self):
+        cases = {
+            r"C:\\users\\bob\\AppData": r"C:\\users\\[REDACTED:USER]\\AppData",
+            "c:/users/bob/x": "c:/users/[REDACTED:USER]/x",
+            "/var/home/jane/x": "/var/home/[REDACTED:USER]/x",
+            "/usr/home/jane/x": "/usr/home/[REDACTED:USER]/x",
+        }
+        for src, want in cases.items():
+            with self.subTest(src=src):
+                self.assertEqual(r(src), want)
+
+
+class Pathological(unittest.TestCase):
+    """Long runs that used to trigger quadratic backtracking."""
+
+    def test_long_runs_stay_fast(self):
+        n = 5000
+        lines = ["auth " + "." * n, "token " + "a." * n, "pass " + "-." * n,
+                 "x@y.io " + "%" * n, "card " + "1 " * n + "x", ":: " + "a-" * n,
+                 "://" + "a." * n, "key " + "-" * n, "hw " + "a-" * n + ":"]
+        for line in lines:
+            with self.subTest(line=line[:12]):
+                start = time.perf_counter()
+                r(line)
+                self.assertLess(time.perf_counter() - start, 0.5)
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 class Cli(unittest.TestCase):
@@ -355,6 +553,29 @@ class Cli(unittest.TestCase):
         res = self.run_cli("app.log", "-q")
         self.assertEqual(res.returncode, 0)
         self.assertEqual(res.stderr, "")
+
+    def test_utf16_with_bom_is_decoded_and_kept(self):
+        raw = "ip 10.0.0.1\r\n".encode("utf-16")          # BOM + native byte order
+        self.log.write_bytes(raw)
+        res = self.run_cli("app.log")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        out = (self.dir / "app.redacted.log").read_bytes()
+        self.assertEqual(out[:2], raw[:2])
+        self.assertEqual(out.decode("utf-16"), "ip [REDACTED:IPV4]\r\n")
+
+    def test_refuses_compressed_input(self):
+        self.log.write_bytes(gzip.compress(b"ip 10.0.0.1\n"))
+        res = self.run_cli("app.log")
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("gzip", res.stderr)
+        self.assertFalse((self.dir / "app.redacted.log").exists())
+
+    def test_refuses_binary_or_bomless_utf16(self):
+        self.log.write_bytes("ip 10.0.0.1\n".encode("utf-16-le"))
+        res = self.run_cli("app.log")
+        self.assertEqual(res.returncode, 1)
+        self.assertFalse((self.dir / "app.redacted.log").exists())
+        self.assertEqual(list(self.dir.iterdir()), [self.log])   # no temp file left
 
     def test_output_copies_input_mode(self):
         os.chmod(self.log, 0o640)

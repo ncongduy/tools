@@ -171,18 +171,18 @@ there. Rules run in this order:
 | Rule          | Catches                                                                 | Becomes                                   |
 |---------------|-------------------------------------------------------------------------|-------------------------------------------|
 | `private_key` | `-----BEGIN … PRIVATE KEY-----` blocks, multi-line or `\n`-escaped      | `[REDACTED:PRIVATE_KEY]`                  |
-| `url_creds`   | `scheme://user:pass@host`                                               | `scheme://[REDACTED:CREDENTIALS]@host`    |
+| `url_creds`   | `scheme://user:pass@host`, also `redis://:pass@host` and passwords containing `@` or `/` | `scheme://[REDACTED:CREDENTIALS]@host` |
 | `jwt`         | `eyJ….eyJ….…` tokens                                                    | `[REDACTED:JWT]`                          |
 | `bearer`      | `Bearer <token>`, `Basic <base64 user:pass>`                            | `Bearer [REDACTED:TOKEN]`                 |
 | `api_key`     | Anthropic/OpenAI `sk-…`, AWS `AKIA…`, GitHub `ghp_…`/`github_pat_…`, GitLab `glpat-…`, Slack `xox?-…`, Google `AIza…`, Stripe `sk_live_…` | `[REDACTED:API_KEY]` |
-| `secret`      | value after a key ending in `password`, `secret`, `token`, `api_key`, `access_key`, `private_key`, `credentials`, `auth`, `authorization` — `k=v`, `k: v`, `"k": "v"` | `password=[REDACTED:SECRET]` |
+| `secret`      | value after a key ending in `password`, `passphrase`, `pass`, `secret`, `token`, `credentials`, `auth`, `authorization`, `session`/`session_id`, `sid`, or a credential `…_key` (`api_key`, `SECRET_KEY`, `signing_key`, `encryption_key`, …). Separators `=`, `:`, `=>`, `:=`; quoted, `\"escaped\"` (JSON inside JSON), `[array]` and `{object}` values; `--password value` and `set PASSWORD value`; `Cookie:`/`Set-Cookie:` to end of line | `password=[REDACTED:SECRET]` |
 | `email`       | email addresses                                                         | `[REDACTED:EMAIL]`                        |
-| `credit_card` | 13–19 digit card numbers, spaces/dashes allowed, card prefix + Luhn checked | `[REDACTED:CREDIT_CARD]`              |
+| `credit_card` | 13–19 digit card numbers (Visa, Mastercard, Amex, Diners, JCB, Discover, UnionPay, Maestro, Mir), spaces/dashes allowed, card prefix + Luhn checked; found even with an expiry or CVV right next to it | `[REDACTED:CREDIT_CARD]` |
 | `phone`       | `+CC …` international numbers, `(555) 123-4567` / `040 123 4567` style  | `[REDACTED:PHONE]`                        |
-| `mac`         | `aa:bb:cc:dd:ee:ff`, `AA-BB-…`                                          | `[REDACTED:MAC]`                          |
+| `mac`         | `aa:bb:cc:dd:ee:ff`, `AA-BB-…`, also straight after a key (`hw:aa:bb:…`) | `[REDACTED:MAC]`                         |
 | `ipv4`        | IPv4 addresses (port kept: `[REDACTED:IPV4]:8080`)                      | `[REDACTED:IPV4]`                         |
-| `ipv6`        | IPv6 addresses                                                          | `[REDACTED:IPV6]`                         |
-| `path`        | the user name in `/home/<user>`, `/Users/<user>`, `C:\Users\<user>`     | `/home/[REDACTED:USER]/…`                 |
+| `ipv6`        | IPv6 addresses, also straight after a key (`addr:fe80::1`)              | `[REDACTED:IPV6]`                         |
+| `path`        | the user name in `/home/<user>` (also `/var/home`, `/usr/home`), `/Users/<user>`, `C:\Users\<user>` (any case, `\` or `/`) | `/home/[REDACTED:USER]/…` |
 
 What it keeps:
 
@@ -191,15 +191,31 @@ What it keeps:
 - Lookalikes: timestamps, UUIDs, version numbers, epoch-ms values, order
   ids, and counters like `max_tokens=4096` or `input_tokens=1234`.
 - Line endings (CRLF), non-UTF-8 bytes, and the input file's permissions.
+- The encoding: UTF-8, or UTF-16/UTF-32 with a BOM (what PowerShell's `>`
+  writes) — the output is written in the same encoding with the same BOM.
+- A line that only *mentions* a `-----BEGIN … PRIVATE KEY-----` header.
+- Text that is already `[REDACTED:…]`: running it again on its own output
+  changes nothing.
 
 Safety: the output is written to a temp file and renamed into place, so a
 failed run never leaves half a file. It refuses to write over the input
 (even with `--force`) and over an existing output unless `--force` is
-given. A private key block with no `END` line is hidden to the end of the
-file. Exit codes: `0` ok, `1` error, `2` bad usage.
+given. A private key cut off before its `END` line is hidden up to the
+first line that isn't key material. Compressed (`.gz`, `.xz`, `.bz2`,
+`.zst`, `.zip`) and binary input is refused, with a hint, instead of
+producing an unredacted copy:
+
+```
+zcat app.log.gz | ./redact-log.py /dev/stdin -o app.redacted.log
+iconv -f UTF-16LE -t UTF-8 app.log > app.utf8.log   # UTF-16 without a BOM
+```
+
+Exit codes: `0` ok, `1` error, `2` bad usage.
 
 Limits: it matches patterns, so it is best effort. It does not catch
 people's names, street addresses, or secrets in formats it doesn't know.
+An unquoted value ends at the first space, so in `passphrase=correct horse`
+only `correct` is masked; quote such values in your logs.
 It does mask harmless IPs like `127.0.0.1` and four-part versions like
 `1.2.3.4`; use `--skip ipv4` if that gets in the way. Check the result
 before sharing: `diff app.log app.redacted.log`.
