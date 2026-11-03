@@ -137,6 +137,78 @@ Habits are identified by name (or any unambiguous prefix). Data lives in
 `~/.habit/`: `habits.csv` for current definitions and `events.log` for the
 append-only event history — both plain CSV, readable in any spreadsheet.
 
+## `redact-log.py`
+
+Mask secrets and personal data in a log before sharing it. Reads any
+line-based text log and writes a redacted copy; the original is never
+modified. Python 3 standard library only.
+
+```
+./redact-log.py app.log                     # → app.redacted.log next to the input
+./redact-log.py app.log -o clean.log        # choose the output file
+./redact-log.py app.log --force             # overwrite an existing output file
+./redact-log.py app.log --skip ipv4,path    # leave some rules out
+./redact-log.py app.log --only email,phone  # run just these rules
+./redact-log.py app.log -q                  # no summary
+./redact-log.py --list                      # every rule with a before → after example
+some-cmd | ./redact-log.py /dev/stdin -o out.log   # redact a pipe (needs -o)
+```
+
+A summary of what was masked goes to stderr:
+
+```
+✅  17 values redacted → app.redacted.log
+    private_key  1
+    secret       3
+    email        1
+    ipv4         3
+    ...
+```
+
+Each value becomes a typed placeholder, so you can still tell what was
+there. Rules run in this order:
+
+| Rule          | Catches                                                                 | Becomes                                   |
+|---------------|-------------------------------------------------------------------------|-------------------------------------------|
+| `private_key` | `-----BEGIN … PRIVATE KEY-----` blocks, multi-line or `\n`-escaped      | `[REDACTED:PRIVATE_KEY]`                  |
+| `url_creds`   | `scheme://user:pass@host`                                               | `scheme://[REDACTED:CREDENTIALS]@host`    |
+| `jwt`         | `eyJ….eyJ….…` tokens                                                    | `[REDACTED:JWT]`                          |
+| `bearer`      | `Bearer <token>`, `Basic <base64 user:pass>`                            | `Bearer [REDACTED:TOKEN]`                 |
+| `api_key`     | Anthropic/OpenAI `sk-…`, AWS `AKIA…`, GitHub `ghp_…`/`github_pat_…`, GitLab `glpat-…`, Slack `xox?-…`, Google `AIza…`, Stripe `sk_live_…` | `[REDACTED:API_KEY]` |
+| `secret`      | value after a key ending in `password`, `secret`, `token`, `api_key`, `access_key`, `private_key`, `credentials`, `auth`, `authorization` — `k=v`, `k: v`, `"k": "v"` | `password=[REDACTED:SECRET]` |
+| `email`       | email addresses                                                         | `[REDACTED:EMAIL]`                        |
+| `credit_card` | 13–19 digit card numbers, spaces/dashes allowed, card prefix + Luhn checked | `[REDACTED:CREDIT_CARD]`              |
+| `phone`       | `+CC …` international numbers, `(555) 123-4567` / `040 123 4567` style  | `[REDACTED:PHONE]`                        |
+| `mac`         | `aa:bb:cc:dd:ee:ff`, `AA-BB-…`                                          | `[REDACTED:MAC]`                          |
+| `ipv4`        | IPv4 addresses (port kept: `[REDACTED:IPV4]:8080`)                      | `[REDACTED:IPV4]`                         |
+| `ipv6`        | IPv6 addresses                                                          | `[REDACTED:IPV6]`                         |
+| `path`        | the user name in `/home/<user>`, `/Users/<user>`, `C:\Users\<user>`     | `/home/[REDACTED:USER]/…`                 |
+
+What it keeps:
+
+- Context around a secret: key names, the `Bearer` scheme, URL scheme and
+  host, the rest of a path.
+- Lookalikes: timestamps, UUIDs, version numbers, epoch-ms values, order
+  ids, and counters like `max_tokens=4096` or `input_tokens=1234`.
+- Line endings (CRLF), non-UTF-8 bytes, and the input file's permissions.
+
+Safety: the output is written to a temp file and renamed into place, so a
+failed run never leaves half a file. It refuses to write over the input
+(even with `--force`) and over an existing output unless `--force` is
+given. A private key block with no `END` line is hidden to the end of the
+file. Exit codes: `0` ok, `1` error, `2` bad usage.
+
+Limits: it matches patterns, so it is best effort. It does not catch
+people's names, street addresses, or secrets in formats it doesn't know.
+It does mask harmless IPs like `127.0.0.1` and four-part versions like
+`1.2.3.4`; use `--skip ipv4` if that gets in the way. Check the result
+before sharing: `diff app.log app.redacted.log`.
+
+To add a rule, append a `Rule(...)` to `RULES` in `redact-log.py`;
+order matters, so put specific patterns before generic ones.
+
+Tests: `python3 -m unittest tests/test_redact_log.py` (stdlib only).
+
 ## workflow
 
 - check todo high priority => timer => action
