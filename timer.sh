@@ -44,7 +44,7 @@ format_time() {
 
 bell() {
   if command -v canberra-gtk-play &>/dev/null; then
-    canberra-gtk-play -i complete >/dev/null 2>&1 || true
+    canberra-gtk-play -i alarm-clock-elapsed >/dev/null 2>&1 || true
   else
     printf '\a' 2>/dev/null || true  # fallback to terminal bell
   fi
